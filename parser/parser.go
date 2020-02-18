@@ -2,10 +2,12 @@ package parser
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -58,12 +60,20 @@ func (p *Parser) Parse() ([]Request, error) {
 	var req *Request
 	requests := make([]Request, 0)
 	lineIter := 0
+	partBoundary := ""
+	partIdx := 0
 	for scanner.Scan() {
 		text := scanner.Text()
 		// Split text by unicode.IsSpace
 		tokens := strings.Fields(text)
 		// Used to make error more informative
 		lineIter++
+		if len(tokens) == 0 {
+			if state == ParserStateHeader {
+				state = ParserStateBody
+			}
+			continue
+		}
 		switch {
 		case tokens[0] == "###":
 			// Parse start of Request with name
@@ -71,7 +81,9 @@ func (p *Parser) Parse() ([]Request, error) {
 			// If we have something in the Request we need to finish it first
 			// and initialise a new one
 			if req != nil {
-				finishRequest(req)
+				if err := finishRequest(req, p.environment); err != nil {
+					return nil, err
+				}
 				requests = append(requests, *req)
 				req = nil
 			}
@@ -104,9 +116,6 @@ func (p *Parser) Parse() ([]Request, error) {
 			// Comment without space after # symbol
 			req.Comments = append(req.Comments, strings.TrimPrefix(text, "#"))
 			continue
-		case strings.HasPrefix(tokens[0], "--"):
-			//TODO multipart handling
-
 		case strings.TrimSpace(text) == "":
 			if state == ParserStateHeader {
 				state = ParserStateBody
@@ -134,7 +143,7 @@ func (p *Parser) Parse() ([]Request, error) {
 				req.Operation = OperationHEAD
 			}
 			// Replace any environment variables or macros in the URL before parsing
-			req.RawURL = macroReplace(p, tokens[1])
+			req.RawURL = macroReplace(p.environment, tokens[1])
 
 			if u, err := url.Parse(req.RawURL); err != nil {
 				return nil, fmt.Errorf("error on line %d: could not parse string \"%s\" as URL: %e", lineIter, req.RawURL, err)
@@ -144,24 +153,51 @@ func (p *Parser) Parse() ([]Request, error) {
 			state = ParserStateHeader
 			continue
 		case ParserStateHeader:
-			// TODO create parts on ContentType multipart Header
-			// TODO switch to parse part on Part boundry
-			if len(tokens) > 0 {
-				req.Headers[strings.TrimSuffix(tokens[0], ":")] = strings.Join(tokens[1:], " ")
+			hdrName := strings.TrimSuffix(tokens[0], ":")
+			hdr := strings.Join(tokens[1:], " ")
+			if partIdx > 0 {
+				if idx := strings.Index(hdr, "name="); idx != -1 {
+					p := hdr[idx+5:]
+					startIndex := strings.Index(p, "\"")
+					endIndex := strings.Index(p[startIndex+1:], "\"")
+					req.Parts[partIdx-1].Name = p[startIndex+1 : endIndex+1]
+				}
+
+				req.Parts[partIdx-1].Headers[hdrName] = hdr
 			} else {
-				state = ParserStateBody
+				if strings.Contains(hdr, "multipart/form-data;") {
+					partBoundary = strings.Split(strings.TrimSpace(strings.TrimPrefix(hdr, "multipart/form-data;")), "=")[1]
+					req.Parts = make([]RequestPart, 0)
+				}
+
+				req.Headers[hdrName] = hdr
+			}
+
+		case ParserStateBody:
+			if strings.Contains(text, "--"+partBoundary) && !strings.HasSuffix(text, "--") {
+				partIdx++
+				req.Parts = append(req.Parts, RequestPart{
+					Headers: make(map[string]string),
+				})
+				state = ParserStateHeader
 				continue
 			}
-		case ParserStateBody:
-			req.Body += text
-			// TODO create parts on ContentType multipart Header
-			// TODO switch to parse part on Part boundry
+
+			if partIdx > 0 {
+				if !strings.Contains(text, "--"+partBoundary) {
+					req.Parts[partIdx-1].Body += text
+				}
+			} else {
+				req.Body += text
+			}
 		}
 	}
 
 	// Finish any dangling Requests and don't add empty ones to the return value
 	if req != nil && req.RawURL != "" {
-		finishRequest(req)
+		if err := finishRequest(req, p.environment); err != nil {
+			return nil, err
+		}
 		requests = append(requests, *req)
 		req = nil
 	}
@@ -177,23 +213,84 @@ func requestNotInitializedError(line int) error {
 	return fmt.Errorf("error in line %d: request is not initialised did you forget the ### $NAME line ad the beginning", line)
 }
 
-func finishRequest(req *Request) {
+func finishRequest(req *Request, vars map[string]string) error {
+	if contentType, ok := req.Headers["Content-Type"]; ok && contentType == "application/json" {
+		req.Body = strings.ReplaceAll(strings.ReplaceAll(req.Body, "{{", "\"{{"), "}}", "}}\"")
+		bodyBlob, err := processJSON([]byte(req.Body), vars)
+		if err != nil {
+			return err
+		}
+		req.Body = string(bodyBlob)
+	}
 	req.Body = strings.TrimSpace(req.Body)
+	if strings.HasPrefix(req.Body, "< ") {
+		req.FileLoad = strings.ReplaceAll(req.Body, "< ", "")
+		req.Body = ""
+	}
 	if req.Parts != nil {
 		for i, part := range req.Parts {
-			part.Body = strings.TrimSpace(req.Body)
+			if contentType, ok := req.Headers["Content-Type"]; ok && contentType == "application/json" {
+				part.Body = strings.ReplaceAll(strings.ReplaceAll(part.Body, "{{", "\"{{"), "}}", "}}\"")
+				bodyBlob, err := processJSON([]byte(part.Body), vars)
+				if err != nil {
+					return err
+				}
+				part.Body = string(bodyBlob)
+			}
+			part.Body = strings.TrimSpace(part.Body)
+			if strings.HasPrefix(part.Body, "< ") {
+				part.FileLoad = strings.ReplaceAll(part.Body, "< ", "")
+				part.Body = ""
+			}
 			req.Parts[i] = part
 		}
 	}
+	return nil
 }
 
-func macroReplace(p *Parser, text string) string {
+func processJSON(blob []byte, vars map[string]string) ([]byte, error) {
+	tmpJSON := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(blob, &tmpJSON); err != nil {
+		return nil, err
+	}
+
+	for key, value := range tmpJSON {
+		str := string(value)
+		if strings.Contains(str, "{{") && strings.Contains(str, "}}") {
+			str = macroReplace(vars, strings.ReplaceAll(str, "\"", ""))
+			if _, err := strconv.Atoi(str); err == nil {
+				tmpJSON[key] = json.RawMessage(str)
+				continue
+			}
+
+			if str == "null" {
+				tmpJSON[key] = json.RawMessage(str)
+				continue
+			}
+
+			tmpJSON[key] = json.RawMessage("\"" + str + "\"")
+			continue
+		}
+
+		if strings.HasPrefix(str, "{") {
+			v, err := processJSON(value, vars)
+			if err != nil {
+				return nil, err
+			}
+			tmpJSON[key] = v
+			continue
+		}
+	}
+	return json.Marshal(tmpJSON)
+}
+
+func macroReplace(vars map[string]string, text string) string {
 	s := ""
 	tokens := ParseMacrosFromLine(text)
 	for _, tok := range tokens {
 		result := tok.Token
 		if tok.IsMacro {
-			for key, value := range p.environment {
+			for key, value := range vars {
 				if key == tok.Token {
 					result = value
 				}

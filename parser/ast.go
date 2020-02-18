@@ -26,6 +26,7 @@ type Request struct {
 	URL       url.URL
 	Headers   map[string]string
 	Body      string
+	FileLoad  string
 	Parts     []RequestPart
 	Options   []Option
 	Comments  []string
@@ -41,7 +42,8 @@ func NewRequest(name string) *Request {
 }
 
 type RequestPart struct {
-	Name    string
-	Headers map[string]string
-	Body    string
+	Name     string
+	Headers  map[string]string
+	Body     string
+	FileLoad string
 }
