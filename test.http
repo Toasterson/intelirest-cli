@@ -1,0 +1,4 @@
+GET http://{{host}}/get?show_env=1
+Accept: application/json
+
+###

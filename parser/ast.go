@@ -41,6 +41,10 @@ func NewRequest(name string) *Request {
 	}
 }
 
+func (req *Request) IsMultiPart() bool {
+	return len(req.Parts) > 0
+}
+
 type RequestPart struct {
 	Name     string
 	Headers  map[string]string
