@@ -1,3 +1,5 @@
+//go:generate stringer -type Operation -type Option
+
 package parser
 
 import "net/url"
