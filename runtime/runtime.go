@@ -1,13 +1,17 @@
 package runtime
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"strings"
+
+	"intelirest-cli/parser"
 
 	"github.com/hashicorp/go-multierror"
 	"gopkg.in/resty.v1"
-	"intelirest-cli/parser"
 )
 
 const DefaultMaxSimultaneousConnections = 4
@@ -17,6 +21,7 @@ var QueryJoinCharacter = ", "
 type Client struct {
 	client  *resty.Client
 	maxconn int
+	verbose bool
 }
 
 func New(maxSimulataneousConnections int) *Client {
@@ -30,8 +35,12 @@ func New(maxSimulataneousConnections int) *Client {
 	}
 }
 
+func (c *Client) SetVerbose() {
+	c.verbose = true
+}
+
 func (c *Client) Do(requests []parser.Request) ([]Response, error) {
-	var rErr *multierror.Error
+	rErr := &multierror.Error{}
 	responses := make([]Response, 0)
 	for i, request := range requests {
 		resp, err := c.ExecuteRequest(request)
@@ -40,11 +49,21 @@ func (c *Client) Do(requests []parser.Request) ([]Response, error) {
 		}
 		responses = append(responses, *resp)
 	}
+	if rErr.Len() == 0 {
+		return responses, nil
+	}
 
 	return responses, rErr
 }
 
 func (c *Client) ExecuteRequest(req parser.Request) (*Response, error) {
+	if c.verbose {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(req); err != nil {
+			return nil, err
+		}
+	}
 	restReq := c.client.R()
 	restReq.SetHeaders(req.Headers)
 	//for key, vals := range req.URL.Query() {
@@ -112,7 +131,12 @@ func respFromResty(restyResp *resty.Response) (*Response, error) {
 		resp.Header[key] = strings.Join(value, QueryJoinCharacter)
 	}
 
-	resp.Content = restyResp.Body()
+	body := restyResp.Body()
+	if decoded, err := base64.StdEncoding.DecodeString(string(body)); err == nil {
+		resp.Content = decoded
+	} else {
+		resp.Content = body
+	}
 
 	resp.HTTPVersion = restyResp.RawResponse.Proto
 

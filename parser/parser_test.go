@@ -77,9 +77,12 @@ Accept: application/json
 		},
 		{
 			input: `### GET request with parameter
-GET https://httpbin.org/get?show_env=1
+GET https://{{host}}/get?show_env=1
 Accept: application/json
 `,
+			variables: map[string]string{
+				"host": "httpbin.org",
+			},
 			output: []Request{
 				{
 					Name:      "GET request with parameter",

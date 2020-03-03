@@ -210,7 +210,7 @@ func (p *Parser) Parse() ([]Request, error) {
 }
 
 func requestNotInitializedError(line int) error {
-	return fmt.Errorf("error in line %d: request is not initialised did you forget the ### $NAME line ad the beginning", line)
+	return fmt.Errorf("error in line %d: request is not initialised did you forget the ### $NAME line at the beginning", line)
 }
 
 func finishRequest(req *Request, vars map[string]string) error {
@@ -350,6 +350,12 @@ func ParseMacrosFromLine(s string) []token {
 		spans = append(spans, span{
 			isMacro: false,
 			start:   0,
+			end:     len(s),
+		})
+	} else {
+		spans = append(spans, span{
+			isMacro: false,
+			start:   macroEndIndex + 2,
 			end:     len(s),
 		})
 	}
