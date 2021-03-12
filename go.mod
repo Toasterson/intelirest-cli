@@ -3,7 +3,7 @@ module intelirest-cli
 go 1.13
 
 require (
-	github.com/hashicorp/go-multierror v1.1.0
+	github.com/hashicorp/go-multierror v1.1.1
 	github.com/satori/go.uuid v1.2.0
 	github.com/spf13/cobra v0.0.7
 	github.com/spf13/viper v1.7.1
