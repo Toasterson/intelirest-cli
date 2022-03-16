@@ -7,6 +7,6 @@ require (
 	github.com/satori/go.uuid v1.2.0
 	github.com/spf13/cobra v0.0.7
 	github.com/spf13/viper v1.8.0
-	github.com/stretchr/testify v1.7.0
+	github.com/stretchr/testify v1.7.1
 	gopkg.in/resty.v1 v1.12.0
 )
